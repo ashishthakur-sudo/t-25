@@ -11,11 +11,10 @@ An intelligent personal AI chatbot that can **learn in real-time**, **extract & 
 - **Multimodal Analysis:** Displays the image directly in the chat, stores it in memory, and explains or transcribes the visual information.
 - Optional Google Gemini Vision integration for advanced OCR, diagram breakdown, and product recognition.
 
-### 2. 📄 PDF & Long Articles Ingestion
-- Upload PDF documents (multi-page reports, manuals, books) and long articles.
-- Uses `pypdf` to extract text from all pages and recursively chunks long text into structured sections.
-- Automatically creates an executive overview and indexes every section into persistent SQLite memory.
-- Ask questions about any part of the PDF or long article, and CogniBot retrieves the exact section!
+### 2. 📄 Documents, Spreadsheets & Presentations
+- Upload PDF, DOCX, XLSX, PPTX, HTML, Markdown, CSV, JSON, and other supported text files.
+- Extracts text from document paragraphs, spreadsheet rows, presentation slides, and web-page tables, then indexes every section in persistent SQLite memory.
+- Ask a question in the same message as an attachment or ask later; T25 retrieves relevant stored sections to answer.
 
 ### 3. 🔗 Website Link & Product Information Extraction
 - **Option 1 (Chat Bar):** Paste any website URL (e.g. `https://amazon.com/...`, `https://wikipedia.org/...`) directly into the chat message.
@@ -60,7 +59,7 @@ The server will launch at `http://127.0.0.1:8000` and automatically open in your
 
 ## 💬 How to Use
 
-1. **Paste a Link:** Paste any product or news URL into the chat bar or click 🔗.
-2. **Attach a PDF or Image:** Click 📎 to attach an image or PDF, add an optional question, and hit send.
+1. **Paste a Link:** Paste a product or article URL into chat. Add a question before or after the link to get an answer from the fetched page, or paste the link alone to index it for follow-up questions.
+2. **Attach a File:** Click 📎 to attach an image, PDF, Office document, or text file. Ask a question with the attachment or ask about it later.
 3. **Teach a Fact:** *"Remember that the WiFi network is OfficeNet and password is Pass123"*
 4. **Ask a Question:** Click 🎙️ and ask *"What is the WiFi password?"* or *"What was the price of the product I just shared?"*

@@ -185,37 +185,11 @@ async def upload_document(file: UploadFile = File(...), category: str = Form("Do
             "chunks_stored": 1
         }
 
-    # 3. Handle Text Documents (txt, md, csv, json)
     try:
-        text = contents.decode("utf-8", errors="replace")
+        result = extractor_engine.extract_and_store_document(contents, filename, category)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to read file as text: {str(e)}")
-        
-    if not text.strip():
-        raise HTTPException(status_code=400, detail="File is empty")
-        
-    chunks = extractor_engine.chunk_text(text, chunk_size=800)
-    created_items = []
-    base_name = os.path.splitext(filename)[0].replace("_", " ").replace("-", " ").title()
-    
-    for idx, p in enumerate(chunks, 1):
-        title = f"{base_name} (Section {idx})" if len(chunks) > 1 else base_name
-        mem = memory_engine.add_memory(
-            title=title,
-            content=p,
-            category=category,
-            tags=filename,
-            source=f"upload:{filename}"
-        )
-        created_items.append(mem)
-        
-    return {
-        "success": True,
-        "filename": filename,
-        "chunks_stored": len(created_items),
-        "message": f"Successfully learned and stored {len(created_items)} sections from '{filename}'",
-        "speech_text": f"Successfully ingested {filename} and stored {len(created_items)} sections in memory."
-    }
+        raise HTTPException(status_code=400, detail=f"Failed to process '{filename}': {str(e)}")
+    return {key: value for key, value in result.items() if key != "memories"}
 
 # --- Chat Attachment (Direct upload & question from Chat Bar) ---
 
@@ -229,7 +203,7 @@ async def chat_attachment(
     contents = await file.read()
     ext = os.path.splitext(filename)[1].lower()
     
-    user_label = f"Attached: `{filename}`" + (f"\n\n{message}" if message.strip() else "")
+    user_label = f"Attached: `{filename}`"
     memory_engine.save_chat_message(session_id=session_id, role="user", content=user_label)
     
     # Process PDF
@@ -239,16 +213,23 @@ async def chat_attachment(
             raise HTTPException(status_code=400, detail=res.get("error"))
         bot_reply = res["display_message"]
         speech_text = res["speech_text"]
-        memory_engine.save_chat_message(
-            session_id=session_id,
-            role="assistant",
-            content=bot_reply,
-            sources_used=[m["id"] for m in res.get("memories", [])]
-        )
+        sources = res.get("memories", [])
+        if message.strip():
+            answer = ai_engine.process_user_message(message, session_id=session_id)
+            bot_reply = answer["text"]
+            speech_text = answer["speech_text"]
+            sources = answer["sources"] or sources
+        if not message.strip():
+            memory_engine.save_chat_message(
+                session_id=session_id,
+                role="assistant",
+                content=bot_reply,
+                sources_used=[m["id"] for m in sources]
+            )
         return {
             "text": bot_reply,
             "speech_text": speech_text,
-            "sources": res.get("memories", []),
+            "sources": sources,
             "learned": True
         }
         
@@ -274,38 +255,32 @@ async def chat_attachment(
             "image_url": res["image_url"]
         }
         
-    # Process Text/Doc
+    # Process searchable text and Office documents
     try:
-        text = contents.decode("utf-8", errors="replace")
-        chunks = extractor_engine.chunk_text(text, chunk_size=800)
-        base_name = os.path.splitext(filename)[0].replace("_", " ").title()
-        stored = []
-        for idx, ch in enumerate(chunks, 1):
-            m = memory_engine.add_memory(
-                title=f"{base_name} (Section {idx})",
-                content=ch,
-                category="Document",
-                tags=filename,
-                source=f"upload:{filename}"
+        result = extractor_engine.extract_and_store_document(contents, filename, "Document")
+        stored = result["memories"]
+        bot_reply = result["message"]
+        speech_text = result["speech_text"]
+        sources = stored
+        learned = True
+        if message.strip():
+            answer = ai_engine.process_user_message(message, session_id=session_id)
+            bot_reply = answer["text"]
+            speech_text = answer["speech_text"]
+            sources = answer["sources"] or stored
+            learned = answer["learned"]
+        if not message.strip():
+            memory_engine.save_chat_message(
+                session_id=session_id,
+                role="assistant",
+                content=bot_reply,
+                sources_used=[m["id"] for m in sources]
             )
-            stored.append(m)
-        bot_reply = (
-            f"📄 **Document `{filename}` Ingested:**\n\n"
-            f"> Stored {len(stored)} sections into memory.\n\n"
-            f"🧠 *Ask me any questions about `{filename}`!*"
-        )
-        speech_text = f"Successfully learned {filename} and stored {len(stored)} sections into memory."
-        memory_engine.save_chat_message(
-            session_id=session_id,
-            role="assistant",
-            content=bot_reply,
-            sources_used=[m["id"] for m in stored]
-        )
         return {
             "text": bot_reply,
             "speech_text": speech_text,
-            "sources": stored,
-            "learned": True
+            "sources": sources,
+            "learned": learned
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to process file: {str(e)}")

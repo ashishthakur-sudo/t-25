@@ -258,28 +258,45 @@ def process_user_message(message: str, session_id: str = "default") -> Dict[str,
         }
         
     # 2. Check for Website URL in message (Fetch product info / web article)
+    website_memories = []
     url_match = re.search(r'https?://[^\s]+', clean_message)
     if url_match:
         import extractor_engine
         target_url = url_match.group(0).rstrip('.,;)"\'')
         url_res = extractor_engine.fetch_and_extract_url(target_url)
-        if url_res.get("success"):
+        if not url_res.get("success"):
+            resp_text = f"I couldn't read that website: {url_res.get('error', 'Unknown error')}"
+            memory_engine.save_chat_message(session_id=session_id, role="assistant", content=resp_text)
+            return {
+                "text": resp_text,
+                "speech_text": clean_for_speech(resp_text),
+                "sources": [],
+                "learned": False,
+                "is_url": True
+            }
+
+        website_memories = url_res.get("memories", [])
+        website_question = (
+            clean_message[:url_match.start()] + " " + clean_message[url_match.end():]
+        ).strip(" \t\r\n-:,.!?;")
+        if not website_question:
             resp_text = url_res["display_message"]
             speech_text = url_res["speech_text"]
             memory_engine.save_chat_message(
                 session_id=session_id,
                 role="assistant",
                 content=resp_text,
-                sources_used=[m["id"] for m in url_res.get("memories", [])]
+                sources_used=[m["id"] for m in website_memories]
             )
             return {
                 "text": resp_text,
                 "speech_text": speech_text,
-                "sources": url_res.get("memories", []),
+                "sources": website_memories,
                 "learned": True,
                 "is_url": True,
                 "is_product": url_res.get("is_product", False)
             }
+        clean_message = website_question
 
     # 3. Check greetings or meta queries
     meta_response = check_greeting_or_meta(clean_message)
@@ -294,7 +311,14 @@ def process_user_message(message: str, session_id: str = "default") -> Dict[str,
         }
         
     # 3. Retrieve relevant memories via hybrid search
-    relevant_memories = memory_engine.search_relevant_memories(clean_message, top_k=4)
+    relevant_memories = memory_engine.search_relevant_memories(
+        clean_message,
+        top_k=20 if website_memories else 4
+    )
+    if website_memories:
+        website_memory_ids = {memory["id"] for memory in website_memories}
+        page_matches = [memory for memory in relevant_memories if memory["id"] in website_memory_ids]
+        relevant_memories = page_matches[:4] if page_matches else website_memories[:4]
     
     # 4. Generate response
     provider = memory_engine.get_setting("ai_provider", "local")
@@ -354,5 +378,6 @@ def process_user_message(message: str, session_id: str = "default") -> Dict[str,
         "text": resp_text,
         "speech_text": speech_text,
         "sources": sources_used,
-        "learned": False
+        "learned": bool(website_memories),
+        "is_url": bool(website_memories)
     }

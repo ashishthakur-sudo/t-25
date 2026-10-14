@@ -13,9 +13,12 @@ import base64
 import requests
 from typing import Dict, Any, List, Optional
 from bs4 import BeautifulSoup
+from docx import Document
+from openpyxl import load_workbook
 from pypdf import PdfReader
 from io import BytesIO
 from PIL import Image
+from pptx import Presentation
 
 import memory_engine
 from ai_engine import clean_for_speech, call_gemini_api
@@ -35,39 +38,113 @@ HEADERS = {
 
 def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150) -> List[str]:
     """Splits long text into overlapping chunks for semantic retrieval."""
-    paragraphs = text.split("\n\n")
+    clean_text = text.strip()
+    if not clean_text:
+        return []
+
+    chunk_size = max(1, chunk_size)
+    overlap = min(max(0, overlap), chunk_size - 1)
     chunks = []
-    current_chunk = []
-    current_len = 0
-    
-    for p in paragraphs:
-        p_clean = p.strip()
-        if not p_clean:
-            continue
-            
-        p_len = len(p_clean)
-        if current_len + p_len > chunk_size and current_chunk:
-            chunk_str = "\n\n".join(current_chunk)
-            chunks.append(chunk_str)
-            # Retain some context for overlap
-            current_chunk = [current_chunk[-1], p_clean] if len(current_chunk) > 1 else [p_clean]
-            current_len = len("\n\n".join(current_chunk))
-        else:
-            current_chunk.append(p_clean)
-            current_len += p_len
-            
-    if current_chunk:
-        chunks.append("\n\n".join(current_chunk))
-        
-    # If no double-newlines, fall back to fixed length slicing
-    if not chunks and text.strip():
-        clean = text.strip()
-        for i in range(0, len(clean), chunk_size - overlap):
-            chunk = clean[i:i + chunk_size].strip()
-            if chunk:
-                chunks.append(chunk)
-                
+    start = 0
+    while start < len(clean_text):
+        end = min(start + chunk_size, len(clean_text))
+        if end < len(clean_text):
+            split_floor = start + chunk_size // 2
+            boundary = max(clean_text.rfind("\n", split_floor, end), clean_text.rfind(" ", split_floor, end))
+            if boundary > start:
+                end = boundary
+        chunk = clean_text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end >= len(clean_text):
+            break
+        start = max(start + 1, end - overlap)
+
     return chunks
+
+def extract_document_text(file_bytes: bytes, filename: str) -> str:
+    """Extracts searchable text from supported document and source formats."""
+    extension = os.path.splitext(filename)[1].lower()
+
+    if extension == ".docx":
+        document = Document(BytesIO(file_bytes))
+        sections = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+        for table in document.tables:
+            sections.extend(" | ".join(cell.text.strip() for cell in row.cells) for row in table.rows)
+        return "\n\n".join(sections)
+
+    if extension == ".xlsx":
+        workbook = load_workbook(BytesIO(file_bytes), read_only=True, data_only=True)
+        sections = []
+        try:
+            for sheet in workbook.worksheets:
+                sections.append(f"Sheet: {sheet.title}")
+                for row in sheet.iter_rows(values_only=True):
+                    values = [str(value).strip() for value in row if value is not None and str(value).strip()]
+                    if values:
+                        sections.append(" | ".join(values))
+        finally:
+            workbook.close()
+        return "\n".join(sections)
+
+    if extension == ".pptx":
+        presentation = Presentation(BytesIO(file_bytes))
+        sections = []
+        for slide_number, slide in enumerate(presentation.slides, 1):
+            sections.append(f"Slide {slide_number}")
+            for shape in slide.shapes:
+                if shape.has_text_frame and shape.text.strip():
+                    sections.append(shape.text.strip())
+                if shape.has_table:
+                    for row in shape.table.rows:
+                        sections.append(" | ".join(cell.text.strip() for cell in row.cells))
+        return "\n\n".join(sections)
+
+    if extension in {".html", ".htm"}:
+        soup = BeautifulSoup(file_bytes, "html.parser")
+        for tag in soup(["script", "style", "nav", "footer", "noscript"]):
+            tag.decompose()
+        return soup.get_text("\n", strip=True)
+
+    text_extensions = {
+        ".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log",
+        ".rst", ".ini", ".cfg", ".py", ".js", ".css"
+    }
+    if extension in text_extensions:
+        return file_bytes.decode("utf-8-sig")
+
+    raise ValueError(f"Unsupported file type '{extension or 'unknown'}'. Upload PDF, image, DOCX, XLSX, PPTX, HTML, or a text file.")
+
+def store_document_text(text: str, filename: str, category: str = "Document") -> Dict[str, Any]:
+    """Chunks extracted document text and stores each section in searchable memory."""
+    if not text.strip():
+        raise ValueError(f"No readable text was found in '{filename}'.")
+
+    chunks = chunk_text(text, chunk_size=800)
+    base_name = os.path.splitext(filename)[0].replace("_", " ").replace("-", " ").title()
+    memories = []
+    for index, chunk in enumerate(chunks, 1):
+        title = f"{base_name} (Section {index})" if len(chunks) > 1 else base_name
+        memories.append(memory_engine.add_memory(
+            title=title,
+            content=chunk,
+            category=category,
+            tags=filename,
+            source=f"upload:{filename}"
+        ))
+
+    return {
+        "success": True,
+        "filename": filename,
+        "chunks_stored": len(memories),
+        "memories": memories,
+        "message": f"Successfully learned and stored {len(memories)} sections from '{filename}'",
+        "speech_text": f"Successfully ingested {filename} and stored {len(memories)} sections in memory."
+    }
+
+def extract_and_store_document(file_bytes: bytes, filename: str, category: str = "Document") -> Dict[str, Any]:
+    """Extracts a supported non-PDF document and indexes it in local memory."""
+    return store_document_text(extract_document_text(file_bytes, filename), filename, category)
 
 # --- 1. Web Page & Product Extractor ---
 
@@ -211,8 +288,9 @@ def fetch_and_extract_url(url: str) -> Dict[str, Any]:
     paragraphs = []
     main_elem = soup.find("article") or soup.find("main") or soup.find(id=re.compile(r'content|main|article', re.I)) or soup.body
     if main_elem:
-        for p in main_elem.find_all(["p", "h2", "h3", "li"]):
-            text_line = p.get_text(strip=True)
+        for p in main_elem.find_all(["p", "h2", "h3", "li", "tr", "blockquote", "dt", "dd"]):
+            separator = " | " if p.name == "tr" else " "
+            text_line = p.get_text(separator, strip=True)
             if len(text_line) > 25:
                 paragraphs.append(text_line)
                 
@@ -255,7 +333,7 @@ def fetch_and_extract_url(url: str) -> Dict[str, Any]:
     stored_memories.append(overview_mem)
 
     # Store remaining long chunks
-    for idx, ch in enumerate(chunks[:15], 1):  # store up to 15 chunks
+    for idx, ch in enumerate(chunks, 1):
         if len(ch) > 40:
             m = memory_engine.add_memory(
                 title=f"{title[:45]} (Part {idx})",

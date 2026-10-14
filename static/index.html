@@ -132,8 +132,8 @@
 
           <div class="input-container">
             <!-- Hidden File Input for PDF, Images, Text -->
-            <input type="file" id="chatFileInput" accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.md,.csv,.json" style="display:none;">
-            <button class="btn-tool" id="btnAttach" title="Attach Image, PDF, or Document (📎)">📎</button>
+            <input type="file" id="chatFileInput" accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.gif,.txt,.md,.csv,.json,.xml,.yaml,.yml,.log,.rst,.ini,.cfg,.py,.js,.css,.html,.htm,.docx,.xlsx,.pptx" style="display:none;">
+            <button class="btn-tool" id="btnAttach" title="Attach image, PDF, Office document, or text file (📎)">📎</button>
             <button class="btn-tool" id="btnUrl" title="Fetch Website / Product Link (🔗)">🔗</button>
             <button class="btn-mic" id="btnMic" title="Click to speak (Microphone)">🎙️</button>
             <textarea 
@@ -186,7 +186,7 @@
           <div class="ingest-box">
             <h2>📄 Ingest Files & Documents</h2>
             <p style="color:var(--text-muted); font-size:0.92rem;">
-              Upload text documents, notes, markdown guides, or data files. CogniBot will extract the knowledge, index it into memory, and retrieve answers whenever questioned.
+              Upload PDFs, Office documents, images, or text files. T25 will extract readable content, save it to memory, and retrieve it when you ask questions.
             </p>
 
             <div class="form-group">
@@ -198,9 +198,9 @@
               <div class="drop-icon">📤</div>
               <div>
                 <h4 style="font-size:1.05rem; font-weight:600;">Drag and drop files & documents here</h4>
-                <p style="font-size:0.85rem; color:var(--text-dim); margin-top:4px;">Supported: PDFs (.pdf), Images (.png, .jpg, .webp), Articles & Docs (.txt, .md, .csv, .json)</p>
+                <p style="font-size:0.85rem; color:var(--text-dim); margin-top:4px;">Supported: PDF, DOCX, XLSX, PPTX, HTML, text, CSV, JSON, and common image files</p>
               </div>
-              <input type="file" id="docFileInput" accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.md,.csv,.json" style="display:none;">
+              <input type="file" id="docFileInput" accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.gif,.txt,.md,.csv,.json,.xml,.yaml,.yml,.log,.rst,.ini,.cfg,.py,.js,.css,.html,.htm,.docx,.xlsx,.pptx" style="display:none;">
             </div>
 
             <div id="ingestStatus" style="display:none; background:var(--bg-tertiary); padding:14px; border-radius:var(--radius-md);"></div>

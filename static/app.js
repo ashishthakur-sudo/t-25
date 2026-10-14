@@ -538,7 +538,7 @@ async function sendMessage() {
   // 1. If sending with an attachment (PDF, Image, Doc)
   if (attachment) {
     clearAttachment();
-    const promptText = message || `Please analyze and learn from this ${attachment.isImage ? 'image' : attachment.isPdf ? 'PDF' : 'file'}.`;
+    const promptText = message;
     
     appendMessageRow('user', `📎 **Attached:** \`${attachment.name}\`\n\n${message ? message : ''}`);
     const typingId = showTypingIndicator();
