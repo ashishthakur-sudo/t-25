@@ -571,6 +571,9 @@ async function sendMessage() {
         speakText(data.speech_text);
       }
       loadStats();
+      if (data.document_id) {
+        watchDocumentAnalysis(data.document_id, attachment.name);
+      }
     } catch (err) {
       removeTypingIndicator(typingId);
       appendMessageRow('assistant', `⚠️ Failed to analyze file: ${err.message}`);
@@ -693,6 +696,45 @@ function appendMessageRow(role, content, meta = {}) {
   elements.chatMessages.appendChild(row);
 
   elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+}
+
+// Polls a background document analysis job and posts its report to the chat when done
+function pollDocument(docId, onProgress) {
+  return new Promise((resolve, reject) => {
+    const tick = async () => {
+      try {
+        const res = await fetch(`/api/documents/${docId}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const doc = await res.json();
+        if (doc.status === 'done' || doc.status === 'failed') {
+          resolve(doc);
+          return;
+        }
+        if (onProgress) onProgress(doc);
+      } catch (err) {
+        // Server may be briefly unavailable; keep trying
+      }
+      setTimeout(tick, 4000);
+    };
+    tick();
+  });
+}
+
+async function watchDocumentAnalysis(docId, filename) {
+  const typingId = showTypingIndicator();
+  const doc = await pollDocument(docId);
+  removeTypingIndicator(typingId);
+
+  if (doc.status === 'done') {
+    appendMessageRow('assistant', doc.result, { learned: true });
+    showToast(`Analysis & research ready for ${filename}`, 'success');
+    if (state.autoSpeak) {
+      speakText(`My analysis and research on ${filename} is ready.`);
+    }
+  } else {
+    appendMessageRow('assistant', `⚠️ I stored \`${filename}\`, but the analysis step failed: ${doc.error}`);
+  }
+  loadStats();
 }
 
 function showTypingIndicator() {
@@ -961,6 +1003,7 @@ async function handleFileUpload(file) {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('category', category);
+  formData.append('session_id', state.sessionId);
 
   elements.ingestStatus.style.display = 'block';
   elements.ingestStatus.innerHTML = `⏳ Ingesting and learning from <b>${escapeHtml(file.name)}</b>...`;
@@ -980,6 +1023,22 @@ async function handleFileUpload(file) {
     `;
     showToast(`Learned from ${file.name}!`, 'success');
     loadStats();
+
+    if (data.document_id) {
+      const statusLine = document.createElement('p');
+      statusLine.style.cssText = 'font-size:0.85rem; margin-top:6px;';
+      elements.ingestStatus.appendChild(statusLine);
+      const doc = await pollDocument(data.document_id, (d) => {
+        statusLine.textContent = `⏳ ${d.stage}...`;
+      });
+      statusLine.textContent = doc.status === 'done'
+        ? '🔎 Analysis & research complete. The full report has been posted in the Chat tab and saved to memory.'
+        : `⚠️ ${doc.error}`;
+      if (doc.status === 'done') {
+        loadChatHistory();
+      }
+      loadStats();
+    }
   } catch (err) {
     elements.ingestStatus.innerHTML = `<div style="color:var(--danger);">⚠️ ${escapeHtml(err.message)}</div>`;
   }
@@ -1063,7 +1122,7 @@ async function loadSettings() {
       elements.openaiModelInput.value = data.openai_model;
     }
     elements.ollamaUrlInput.value = data.ollama_url || 'http://localhost:11434';
-    elements.ollamaModelInput.value = data.ollama_model || 'llama3.2';
+    elements.ollamaModelInput.value = data.ollama_model || 'llama3.1:8b';
   } catch (err) {
     console.error('Failed to load settings:', err);
   }

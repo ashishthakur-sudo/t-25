@@ -180,6 +180,75 @@ def call_openai_api(query: str, memories: List[Dict[str, Any]], api_key: str, mo
     data = response.json()
     return data["choices"][0]["message"]["content"].strip()
 
+# Ollama's default context window is too small for retrieved document sections
+OLLAMA_NUM_CTX = 8192
+
+def generate_text(
+    prompt: str,
+    system: str = "",
+    json_mode: bool = False,
+    max_tokens: int = 800,
+    timeout: int = 900
+) -> Optional[str]:
+    """
+    Sends a single prompt to the configured AI provider and returns its text.
+    Returns None when no generative provider is configured (local mode or missing key).
+    Raises on request errors so callers can decide how to fall back.
+    """
+    provider = memory_engine.get_setting("ai_provider", "local")
+
+    if provider == "ollama":
+        model = memory_engine.get_setting("ollama_model", "llama3.1:8b").strip()
+        base_url = memory_engine.get_setting("ollama_url", "http://localhost:11434").strip()
+        messages = [{"role": "system", "content": system}] if system else []
+        messages.append({"role": "user", "content": prompt})
+        payload = {
+            "model": model,
+            "stream": False,
+            "messages": messages,
+            "options": {"temperature": 0.3, "num_ctx": OLLAMA_NUM_CTX, "num_predict": max_tokens}
+        }
+        if json_mode:
+            payload["format"] = "json"
+        response = requests.post(f"{base_url.rstrip('/')}/api/chat", json=payload, timeout=timeout)
+        response.raise_for_status()
+        return response.json().get("message", {}).get("content", "").strip()
+
+    if provider == "gemini":
+        key = memory_engine.get_setting("gemini_api_key", "").strip()
+        if not key:
+            return None
+        model = memory_engine.get_setting("gemini_model", "gemini-2.5-flash").strip()
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+        config = {"temperature": 0.3, "maxOutputTokens": max_tokens}
+        if json_mode:
+            config["responseMimeType"] = "application/json"
+        payload = {"contents": [{"parts": [{"text": f"{system}\n\n{prompt}" if system else prompt}]}], "generationConfig": config}
+        response = requests.post(url, json=payload, timeout=timeout)
+        response.raise_for_status()
+        return response.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+    if provider == "openai":
+        key = memory_engine.get_setting("openai_api_key", "").strip()
+        if not key:
+            return None
+        model = memory_engine.get_setting("openai_model", "gpt-4o-mini").strip()
+        messages = [{"role": "system", "content": system}] if system else []
+        messages.append({"role": "user", "content": prompt})
+        payload = {"model": model, "messages": messages, "temperature": 0.3, "max_tokens": max_tokens}
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        response = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            json=payload,
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=timeout
+        )
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"].strip()
+
+    return None
+
 def call_ollama_api(
     query: str,
     memories: List[Dict[str, Any]],
@@ -201,16 +270,18 @@ def call_ollama_api(
                 "content": (
                     f"{SYSTEM_PERSONA}\n\n"
                     "Use the following retrieved knowledge when it is relevant. "
+                    "Entries in the 'Research' category come from web research; all other entries "
+                    "come from the user's own documents and notes. Say which is which when comparing them. "
                     "Do not claim it contains information it does not.\n\n"
                     f"--- RETRIEVED KNOWLEDGE ---\n{context_str}"
                 )
             },
             {"role": "user", "content": query}
         ],
-        "options": {"temperature": 0.4}
+        "options": {"temperature": 0.4, "num_ctx": OLLAMA_NUM_CTX}
     }
     url = f"{base_url.rstrip('/')}/api/chat"
-    response = requests.post(url, json=payload, timeout=120)
+    response = requests.post(url, json=payload, timeout=600)
     response.raise_for_status()
     answer = response.json().get("message", {}).get("content", "").strip()
     if not answer:
@@ -311,10 +382,14 @@ def process_user_message(message: str, session_id: str = "default") -> Dict[str,
         }
         
     # 3. Retrieve relevant memories via hybrid search
-    relevant_memories = memory_engine.search_relevant_memories(
-        clean_message,
-        top_k=20 if website_memories else 4
-    )
+    relevant_memories = memory_engine.search_relevant_memories(clean_message, top_k=20)
+    if not website_memories:
+        # Keep the user's own documents in context, not only the web research about them
+        own = [m for m in relevant_memories if m["category"] != "Research"]
+        research = [m for m in relevant_memories if m["category"] == "Research"]
+        picked = own[:3] + research[:3]
+        picked += [m for m in relevant_memories if m not in picked][:6 - len(picked)]
+        relevant_memories = sorted(picked, key=lambda m: m.get("relevance_score", 0), reverse=True)
     if website_memories:
         website_memory_ids = {memory["id"] for memory in website_memories}
         page_matches = [memory for memory in relevant_memories if memory["id"] in website_memory_ids]
@@ -351,7 +426,7 @@ def process_user_message(message: str, session_id: str = "default") -> Dict[str,
             resp_text = synthesize_local_answer(clean_message, relevant_memories)
 
     elif provider == "ollama":
-        ollama_model = memory_engine.get_setting("ollama_model", "llama3.2").strip()
+        ollama_model = memory_engine.get_setting("ollama_model", "llama3.1:8b").strip()
         ollama_url = memory_engine.get_setting("ollama_url", "http://localhost:11434").strip()
         try:
             resp_text = call_ollama_api(clean_message, relevant_memories, ollama_model, ollama_url)

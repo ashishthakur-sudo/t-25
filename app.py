@@ -17,6 +17,7 @@ from pydantic import BaseModel
 import memory_engine
 import ai_engine
 import extractor_engine
+import research_engine
 
 app = FastAPI(title="T25-chatbot API", version="1.0.0")
 
@@ -152,8 +153,35 @@ def extract_url_endpoint(payload: UrlExtractRequest):
 
 # --- File Ingestion (PDFs, Images, Documents) ---
 
+ANALYSING_NOTE = (
+    "\n\n⏳ *Now analysing the document and researching its topics on the web in the background. "
+    "The full report will appear here when it is ready (this can take a few minutes on a local model).*"
+)
+
+def start_analysis(result: Dict[str, Any], filename: str, category: str, session_id: str) -> Optional[int]:
+    """Starts background analysis and web research for an extracted document."""
+    text = result.get("text", "")
+    if not text.strip():
+        return None
+    return research_engine.start_document_job(text, filename, category, session_id)
+
+@app.get("/api/documents")
+def list_documents_endpoint():
+    return {"documents": memory_engine.list_documents()}
+
+@app.get("/api/documents/{doc_id}")
+def get_document_endpoint(doc_id: int):
+    doc = memory_engine.get_document(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return doc
+
 @app.post("/api/upload")
-async def upload_document(file: UploadFile = File(...), category: str = Form("Document")):
+async def upload_document(
+    file: UploadFile = File(...),
+    category: str = Form("Document"),
+    session_id: str = Form("default")
+):
     filename = file.filename or "uploaded_file.txt"
     contents = await file.read()
     ext = os.path.splitext(filename)[1].lower()
@@ -168,7 +196,8 @@ async def upload_document(file: UploadFile = File(...), category: str = Form("Do
             "filename": filename,
             "chunks_stored": result.get("chunks_stored", 0),
             "message": result.get("display_message"),
-            "speech_text": result.get("speech_text")
+            "speech_text": result.get("speech_text"),
+            "document_id": start_analysis(result, filename, category, session_id)
         }
 
     # 2. Handle Images
@@ -189,7 +218,9 @@ async def upload_document(file: UploadFile = File(...), category: str = Form("Do
         result = extractor_engine.extract_and_store_document(contents, filename, category)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to process '{filename}': {str(e)}")
-    return {key: value for key, value in result.items() if key != "memories"}
+    response = {key: value for key, value in result.items() if key not in ("memories", "text")}
+    response["document_id"] = start_analysis(result, filename, category, session_id)
+    return response
 
 # --- Chat Attachment (Direct upload & question from Chat Bar) ---
 
@@ -211,9 +242,10 @@ async def chat_attachment(
         res = extractor_engine.extract_and_store_pdf(contents, filename)
         if not res.get("success"):
             raise HTTPException(status_code=400, detail=res.get("error"))
-        bot_reply = res["display_message"]
-        speech_text = res["speech_text"]
+        bot_reply = res["display_message"] + ANALYSING_NOTE
+        speech_text = res["speech_text"] + " I am now analysing it and researching its topics in the background."
         sources = res.get("memories", [])
+        document_id = start_analysis(res, filename, "PDF Document", session_id)
         if message.strip():
             answer = ai_engine.process_user_message(message, session_id=session_id)
             bot_reply = answer["text"]
@@ -230,7 +262,8 @@ async def chat_attachment(
             "text": bot_reply,
             "speech_text": speech_text,
             "sources": sources,
-            "learned": True
+            "learned": True,
+            "document_id": document_id
         }
         
     # Process Image
@@ -259,10 +292,11 @@ async def chat_attachment(
     try:
         result = extractor_engine.extract_and_store_document(contents, filename, "Document")
         stored = result["memories"]
-        bot_reply = result["message"]
-        speech_text = result["speech_text"]
+        bot_reply = result["message"] + ANALYSING_NOTE
+        speech_text = result["speech_text"] + " I am now analysing it and researching its topics in the background."
         sources = stored
         learned = True
+        document_id = start_analysis(result, filename, "Document", session_id)
         if message.strip():
             answer = ai_engine.process_user_message(message, session_id=session_id)
             bot_reply = answer["text"]
@@ -280,7 +314,8 @@ async def chat_attachment(
             "text": bot_reply,
             "speech_text": speech_text,
             "sources": sources,
-            "learned": learned
+            "learned": learned,
+            "document_id": document_id
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to process file: {str(e)}")

@@ -117,15 +117,36 @@ def init_db():
                 value TEXT NOT NULL
             )
         """)
-        
+
+        # Uploaded documents and their background analysis / research jobs
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT NOT NULL,
+                category TEXT DEFAULT 'Document',
+                status TEXT DEFAULT 'queued',
+                stage TEXT DEFAULT '',
+                result TEXT DEFAULT '',
+                error TEXT DEFAULT '',
+                memory_ids TEXT DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        # Jobs cannot survive a server restart
+        cursor.execute("""
+            UPDATE documents SET status = 'failed', error = 'Interrupted by server restart'
+            WHERE status NOT IN ('done', 'failed')
+        """)
+
         # Default settings if not present
         default_settings = {
-            "ai_provider": "local",       # "local", "gemini", "openai", "ollama"
+            "ai_provider": "ollama",      # "local", "gemini", "openai", "ollama"
             "gemini_api_key": "",
-            "gemini_model": "gemini-1.5-flash",
+            "gemini_model": "gemini-2.5-flash",
             "openai_api_key": "",
             "openai_model": "gpt-4o-mini",
-            "ollama_model": "llama3.2",
+            "ollama_model": "llama3.1:8b",
             "ollama_url": "http://localhost:11434",
             "bot_name": "T25-chatbot",
             "auto_speak": "true",
@@ -181,6 +202,17 @@ def delete_memory(mem_id: int) -> bool:
         cursor.execute("DELETE FROM memories WHERE id = ?", (mem_id,))
         conn.commit()
         return cursor.rowcount > 0
+
+def delete_memories_by_source(sources: List[str]) -> int:
+    """Deletes every memory whose source exactly matches one of the given values."""
+    if not sources:
+        return 0
+    placeholders = ",".join("?" for _ in sources)
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(f"DELETE FROM memories WHERE source IN ({placeholders})", sources)
+        conn.commit()
+        return cursor.rowcount
 
 def get_memory(mem_id: int) -> Optional[Dict[str, Any]]:
     """Fetches a single memory by ID."""
@@ -493,12 +525,15 @@ def get_chat_history(session_id: str = "default", limit: int = 50) -> List[Dict[
     """Retrieves previous chat messages for the session."""
     with get_connection() as conn:
         cursor = conn.cursor()
+        # Most recent messages, returned oldest-first
         cursor.execute("""
-            SELECT id, session_id, role, content, sources_used, timestamp
-            FROM conversations
-            WHERE session_id = ?
-            ORDER BY id ASC
-            LIMIT ?
+            SELECT * FROM (
+                SELECT id, session_id, role, content, sources_used, timestamp
+                FROM conversations
+                WHERE session_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+            ) ORDER BY id ASC
         """, (session_id, limit))
         rows = cursor.fetchall()
         history = []
@@ -518,6 +553,53 @@ def clear_chat_history(session_id: str = "default") -> bool:
         cursor.execute("DELETE FROM conversations WHERE session_id = ?", (session_id,))
         conn.commit()
         return True
+
+# --- Document Analysis Jobs ---
+
+def create_document(filename: str, category: str = "Document") -> int:
+    """Registers an uploaded document whose analysis is about to start."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO documents (filename, category, status, stage) VALUES (?, ?, 'queued', 'Waiting to start')",
+            (filename, category)
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+def update_document(doc_id: int, **fields: Any):
+    """Updates status, stage, result, error, or memory_ids of a document job."""
+    allowed = {"status", "stage", "result", "error", "memory_ids"}
+    updates = {k: (json.dumps(v) if k == "memory_ids" else v) for k, v in fields.items() if k in allowed}
+    if not updates:
+        return
+    assignments = ", ".join(f"{k} = ?" for k in updates)
+    with get_connection() as conn:
+        conn.execute(
+            f"UPDATE documents SET {assignments}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            [*updates.values(), doc_id]
+        )
+        conn.commit()
+
+def get_document(doc_id: int) -> Optional[Dict[str, Any]]:
+    """Fetches a single document job by ID."""
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item["memory_ids"] = json.loads(item.get("memory_ids") or "[]")
+    return item
+
+def list_documents(limit: int = 100) -> List[Dict[str, Any]]:
+    """Lists uploaded documents, newest first, without the full result text."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, filename, category, status, stage, error, created_at, updated_at "
+            "FROM documents ORDER BY id DESC LIMIT ?",
+            (limit,)
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 # --- App Settings Store ---
 

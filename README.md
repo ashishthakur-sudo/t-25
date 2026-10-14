@@ -16,6 +16,14 @@ An intelligent personal AI chatbot that can **learn in real-time**, **extract & 
 - Extracts text from document paragraphs, spreadsheet rows, presentation slides, and web-page tables, then indexes every section in persistent SQLite memory.
 - Ask a question in the same message as an attachment or ask later; T25 retrieves relevant stored sections to answer.
 
+### 2b. 🔎 Automatic Analysis & Web Research
+After a PDF or document is stored, T25 keeps working in the background:
+1. **Analyses** it with your AI model: title, document type, summary, key points and topics.
+2. **Researches** the main topics on the web (DuckDuckGo, no API key) and saves the most useful pages.
+3. **Writes a research brief** comparing the document with what the web says, with numbered sources.
+
+The full report is posted in the chat when ready and everything is saved to the Knowledge Base (categories *PDF Document* and *Research*), so you can ask about the document, its analysis, or the research in any future session. Uploading a file with the same name again replaces the earlier copy. On a CPU-only machine with `llama3.1:8b` a run takes a few minutes; a smaller model such as `llama3.2` (3B) is faster.
+
 ### 3. 🔗 Website Link & Product Information Extraction
 - **Option 1 (Chat Bar):** Paste any website URL (e.g. `https://amazon.com/...`, `https://wikipedia.org/...`) directly into the chat message.
 - **Option 2 (Tool Button):** Click the 🔗 button on the chat bar to open the Link Ingestion dialog.
@@ -37,8 +45,8 @@ An intelligent personal AI chatbot that can **learn in real-time**, **extract & 
 ### Using Ollama locally
 
 1. Install and start [Ollama](https://ollama.com/download).
-2. Download a model, for example: `ollama pull llama3.2`.
-3. In the app's **Voice & Settings** view, select **Ollama (Local Model)**, set the model name to `llama3.2`, and save. The default Ollama URL is `http://localhost:11434`.
+2. Download a model, for example: `ollama pull llama3.1:8b`.
+3. Ollama with `llama3.1:8b` is the default provider. To change it, open the **Voice & Settings** view, pick a provider/model and save. The default Ollama URL is `http://localhost:11434`.
 
 Chat questions are matched against the local knowledge base first; the retrieved entries are sent to Ollama as context. To search a live website, paste its URL into chat so the existing extractor can fetch and index it.
 

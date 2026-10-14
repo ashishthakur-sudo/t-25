@@ -120,6 +120,8 @@ def store_document_text(text: str, filename: str, category: str = "Document") ->
     if not text.strip():
         raise ValueError(f"No readable text was found in '{filename}'.")
 
+    # Re-uploading the same file replaces its earlier sections, analysis and research
+    memory_engine.delete_memories_by_source([f"upload:{filename}", f"research:{filename}"])
     chunks = chunk_text(text, chunk_size=800)
     base_name = os.path.splitext(filename)[0].replace("_", " ").replace("-", " ").title()
     memories = []
@@ -138,6 +140,7 @@ def store_document_text(text: str, filename: str, category: str = "Document") ->
         "filename": filename,
         "chunks_stored": len(memories),
         "memories": memories,
+        "text": text,
         "message": f"Successfully learned and stored {len(memories)} sections from '{filename}'",
         "speech_text": f"Successfully ingested {filename} and stored {len(memories)} sections in memory."
     }
@@ -414,6 +417,9 @@ def extract_and_store_pdf(file_bytes: bytes, filename: str, category: str = "PDF
             
         full_pdf_text = "\n\n".join(page_texts)
         chunks = chunk_text(full_pdf_text, chunk_size=900)
+
+        # Re-uploading the same file replaces its earlier sections, analysis and research
+        memory_engine.delete_memories_by_source([f"pdf:{filename}", f"research:{filename}"])
         
         base_name = os.path.splitext(filename)[0].replace("_", " ").replace("-", " ").title()
         
@@ -467,7 +473,8 @@ def extract_and_store_pdf(file_bytes: bytes, filename: str, category: str = "PDF
             "chunks_stored": len(stored_memories),
             "display_message": display_msg,
             "speech_text": speech_text,
-            "memories": stored_memories
+            "memories": stored_memories,
+            "text": full_pdf_text
         }
     except Exception as e:
         return {
