@@ -33,8 +33,9 @@ try {
     Write-Host "[!] Ollama is not running. Start Ollama for AI analysis and research." -ForegroundColor Yellow
 }
 
+Write-Host "[*] The chatbot is available from devices on your local network." -ForegroundColor Green
 Write-Host "[*] Launching browser at http://127.0.0.1:8000 ..." -ForegroundColor Green
 Start-Process "http://127.0.0.1:8000"
 
-Write-Host "[*] Starting T25-chatbot on http://127.0.0.1:8000 ..." -ForegroundColor Green
-& $pyCmd -m uvicorn app:app --host 127.0.0.1 --port 8000
+Write-Host "[*] Starting T25-chatbot on all network interfaces ..." -ForegroundColor Green
+& $pyCmd -m uvicorn app:app --host 0.0.0.0 --port 8000

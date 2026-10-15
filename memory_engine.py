@@ -146,7 +146,7 @@ def init_db():
             "gemini_model": "gemini-2.5-flash",
             "openai_api_key": "",
             "openai_model": "gpt-4o-mini",
-            "ollama_model": "llama3.1:8b",
+            "ollama_model": "llama3.2",
             "ollama_url": "http://localhost:11434",
             "bot_name": "T25-chatbot",
             "auto_speak": "true",
@@ -311,7 +311,7 @@ def import_memories_data(items: List[Dict[str, Any]]) -> int:
 
 def extract_tokens(text: str) -> List[str]:
     """Tokenizes text, strips punctuation, normalizes to lowercase."""
-    return re.findall(r'[a-zA-Z0-9]+', text.lower())
+    return re.findall(r'\w+', text.lower(), flags=re.UNICODE)
 
 def extract_keywords(text: str) -> List[str]:
     """Extracts meaningful keywords by filtering out common stop words."""
@@ -320,96 +320,65 @@ def extract_keywords(text: str) -> List[str]:
 
 def search_relevant_memories(query: str, top_k: int = 5) -> List[Dict[str, Any]]:
     """
-    Combines FTS5 BM25 search with token overlap and keyword density scoring.
-    Returns the most relevant memories with a calculated confidence score.
+    Retrieves a bounded set of FTS5 candidates and ranks them by relevance.
     """
     clean_query = query.strip()
     if not clean_query:
         return []
         
-    keywords = extract_keywords(clean_query)
-    all_tokens = extract_tokens(clean_query)
-    
-    results: Dict[int, Dict[str, Any]] = {}
+    keywords = extract_keywords(clean_query)[:12]
+    if not keywords:
+        return []
+
+    candidates: Dict[int, Dict[str, Any]] = {}
     
     with get_connection() as conn:
         cursor = conn.cursor()
-        
-        # 1. Full-Text Search via FTS5 if keywords exist
-        if keywords:
-            # Construct FTS query using OR syntax
-            fts_query_parts = [f'"{kw}"*' for kw in keywords]
-            fts_match_expr = " OR ".join(fts_query_parts)
-            try:
-                cursor.execute("""
-                    SELECT m.*, bm25(memories_fts) AS bm25_rank
-                    FROM memories_fts f
-                    JOIN memories m ON f.rowid = m.id
-                    WHERE memories_fts MATCH ?
-                    ORDER BY bm25_rank ASC
-                    LIMIT 20
-                """, (fts_match_expr,))
-                fts_rows = cursor.fetchall()
-                for r in fts_rows:
-                    m = dict(r)
-                    # Lower bm25 rank is better, convert to positive score
-                    bm25_val = m.get("bm25_rank", 0)
-                    bm25_score = 1.0 / (1.0 + max(0.0, float(bm25_val)))
-                    results[m["id"]] = {
-                        "memory": m,
-                        "bm25_score": bm25_score,
-                        "overlap_score": 0.0,
-                        "score": bm25_score
-                    }
-            except Exception as e:
-                # If FTS matching syntax has an issue, fallback gracefully
-                pass
-                
-        # 2. Substring & Keyword scanning across all memories for fuzzy/exact matching
-        cursor.execute("SELECT * FROM memories ORDER BY id DESC")
-        all_memories = cursor.fetchall()
-        
-        for r in all_memories:
-            m = dict(r)
-            m_id = m["id"]
-            combined_text = f"{m['title']} {m['content']} {m['category']} {m.get('tags', '')}".lower()
-            
-            # Count exact keyword matches
-            match_count = 0
-            for kw in keywords:
-                if kw in combined_text:
-                    match_count += 1
-                    # Give extra weight if keyword is in the title
-                    if kw in m['title'].lower():
-                        match_count += 1
-                        
-            # Exact phrase match bonus
-            phrase_bonus = 0.0
-            if len(clean_query) > 3 and clean_query.lower() in combined_text:
-                phrase_bonus = 1.5
-                
-            overlap_score = (match_count / max(1, len(keywords))) + phrase_bonus if keywords else 0.0
-            
-            if m_id in results:
-                results[m_id]["overlap_score"] = overlap_score
-                results[m_id]["score"] = (results[m_id]["bm25_score"] * 0.4) + (overlap_score * 0.6)
-            elif overlap_score > 0.15:
-                results[m_id] = {
-                    "memory": m,
-                    "bm25_score": 0.0,
-                    "overlap_score": overlap_score,
-                    "score": overlap_score * 0.7
-                }
-                
-    # Sort descending by calculated score
-    sorted_items = sorted(results.values(), key=lambda x: x["score"], reverse=True)
-    top_matches = []
-    for item in sorted_items[:top_k]:
-        mem_data = item["memory"]
-        mem_data["relevance_score"] = round(item["score"], 3)
-        top_matches.append(mem_data)
-        
-    return top_matches
+        fts_query = " OR ".join(f'"{keyword}"' for keyword in keywords)
+        try:
+            cursor.execute("""
+                SELECT m.*, bm25(memories_fts) AS bm25_rank
+                FROM memories_fts
+                JOIN memories m ON memories_fts.rowid = m.id
+                WHERE memories_fts MATCH ?
+                ORDER BY bm25_rank ASC
+                LIMIT 80
+            """, (fts_query,))
+            rows = cursor.fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+
+        # Keep a phrase-match fallback for terms FTS tokenization cannot represent.
+        if not rows and len(clean_query) > 3:
+            cursor.execute("""
+                SELECT *, 0.0 AS bm25_rank FROM memories
+                WHERE content LIKE ? OR title LIKE ? OR tags LIKE ?
+                ORDER BY id DESC LIMIT 80
+            """, (f"%{clean_query}%",) * 3)
+            rows = cursor.fetchall()
+
+        candidate_count = max(1, len(rows))
+        for rank, row in enumerate(rows):
+            memory = dict(row)
+            title_tokens = set(extract_tokens(memory["title"]))
+            content_tokens = set(extract_tokens(
+                f"{memory['content']} {memory['category']} {memory.get('tags', '')}"
+            ))
+            matched = sum(1 for keyword in keywords if keyword in content_tokens or keyword in title_tokens)
+            title_matches = sum(1 for keyword in keywords if keyword in title_tokens)
+            overlap_score = (matched + title_matches) / (len(keywords) * 2)
+            fts_score = (candidate_count - rank) / candidate_count
+            phrase_bonus = 0.25 if clean_query.casefold() in (
+                f"{memory['title']} {memory['content']}".casefold()
+            ) else 0.0
+            memory["relevance_score"] = round(fts_score * 0.4 + overlap_score * 0.6 + phrase_bonus, 3)
+            candidates[memory["id"]] = memory
+
+    return sorted(
+        candidates.values(),
+        key=lambda memory: memory["relevance_score"],
+        reverse=True
+    )[:top_k]
 
 # --- Real-Time Conversational Learning Parser ---
 

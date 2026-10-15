@@ -27,8 +27,9 @@ if "%PY_CMD%"=="py -3" (py -3 -m pip install -q -r requirements.txt) else ("%PY_
 
 curl -s -m 3 http://localhost:11434/api/tags >nul 2>nul || echo [!] Ollama is not running. Start Ollama for AI analysis and research.
 
-echo [*] Starting T25-chatbot on http://127.0.0.1:8000 ...
+echo [*] Starting T25-chatbot on http://0.0.0.0:8000 ...
+echo [*] The chatbot is available from devices on your local network.
 start http://127.0.0.1:8000
 
-if "%PY_CMD%"=="py -3" (py -3 -m uvicorn app:app --host 127.0.0.1 --port 8000) else ("%PY_CMD%" -m uvicorn app:app --host 127.0.0.1 --port 8000)
+if "%PY_CMD%"=="py -3" (py -3 -m uvicorn app:app --host 0.0.0.0 --port 8000) else ("%PY_CMD%" -m uvicorn app:app --host 0.0.0.0 --port 8000)
 pause

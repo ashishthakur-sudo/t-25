@@ -1122,7 +1122,7 @@ async function loadSettings() {
       elements.openaiModelInput.value = data.openai_model;
     }
     elements.ollamaUrlInput.value = data.ollama_url || 'http://localhost:11434';
-    elements.ollamaModelInput.value = data.ollama_model || 'llama3.1:8b';
+    elements.ollamaModelInput.value = data.ollama_model || 'llama3.2';
   } catch (err) {
     console.error('Failed to load settings:', err);
   }

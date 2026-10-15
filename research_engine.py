@@ -11,6 +11,8 @@ import os
 import re
 import json
 import threading
+import logging
+from concurrent.futures import ThreadPoolExecutor
 from collections import Counter
 from typing import Dict, Any, List, Optional
 
@@ -20,6 +22,8 @@ from bs4 import BeautifulSoup
 import memory_engine
 import ai_engine
 from extractor_engine import HEADERS, chunk_text
+
+logger = logging.getLogger(__name__)
 
 # Limits keep a full run to a few minutes on a CPU-only local model
 ANALYSIS_INPUT_CHARS = 9000
@@ -131,10 +135,10 @@ def web_search(queries: List[str]) -> List[Dict[str, str]]:
             })
     return results
 
-def fetch_page_text(url: str) -> str:
+def fetch_page_text(url: str, timeout: int = 12) -> str:
     """Downloads a web page and returns its readable body text (empty string on failure)."""
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=12)
+        resp = requests.get(url, headers=HEADERS, timeout=timeout)
         resp.raise_for_status()
         if "html" not in resp.headers.get("Content-Type", "html"):
             return ""
@@ -147,11 +151,61 @@ def fetch_page_text(url: str) -> str:
     main = soup.find("article") or soup.find("main") or soup.body
     if not main:
         return ""
-    paragraphs = [
-        p.get_text(" ", strip=True)
-        for p in main.find_all(["p", "h2", "h3", "li", "blockquote"])
-    ]
-    return "\n\n".join(p for p in paragraphs if len(p) > 40)
+    return main.get_text("\n", strip=True)
+
+def search_and_store_yahoo_results(query: str, max_results: int = 3) -> List[Dict[str, Any]]:
+    """Prefers Yahoo search, then falls back to other engines and stores readable pages."""
+    from ddgs import DDGS
+
+    backend = "yahoo"
+    try:
+        hits = DDGS(timeout=5).text(query, backend=backend, max_results=max_results) or []
+    except Exception as exc:
+        logger.warning("Yahoo search failed; trying alternate search engines: %s", exc)
+        hits = []
+    if not hits:
+        backend = "auto"
+        hits = DDGS(timeout=5).text(query, backend=backend, max_results=max_results) or []
+
+    results = []
+    seen_urls = set()
+    for hit in hits:
+        url = hit.get("href", "")
+        if not url.startswith(("http://", "https://")) or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        results.append({
+            "title": (hit.get("title") or url).strip(),
+            "url": url,
+            "snippet": (hit.get("body") or "").strip()
+        })
+
+    with ThreadPoolExecutor(max_workers=min(3, len(results) or 1)) as executor:
+        page_texts = list(executor.map(
+            lambda result: fetch_page_text(result["url"], timeout=5),
+            results
+        ))
+
+    stored = []
+    for result, page_text in zip(results, page_texts):
+        text = page_text or result["snippet"]
+        if not text:
+            continue
+        result["text"] = text
+        memory_engine.delete_memories_by_source([
+            f"yahoo:{result['url']}",
+            f"auto:{result['url']}"
+        ])
+        chunks = chunk_text(text, chunk_size=1100, overlap=120)[:2]
+        for index, chunk in enumerate(chunks, 1):
+            stored.append(memory_engine.add_memory(
+                title=f"{'Yahoo' if backend == 'yahoo' else 'Web'}: {result['title'][:55]} (Part {index})",
+                content=f"Source URL: {result['url']}\n\n{chunk}",
+                category="Web Research",
+                tags=f"{backend}, web search, {query[:100]}",
+                source=f"{backend}:{result['url']}"
+            ))
+    return stored
 
 def research_topics(analysis: Dict[str, Any], filename: str) -> Dict[str, Any]:
     """Runs web searches, stores the useful pages in memory, and returns the sources."""

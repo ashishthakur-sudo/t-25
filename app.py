@@ -18,6 +18,7 @@ import memory_engine
 import ai_engine
 import extractor_engine
 import research_engine
+import document_store
 
 app = FastAPI(title="T25-chatbot API", version="1.0.0")
 
@@ -61,6 +62,23 @@ def handle_chat(payload: ChatRequest):
         raise HTTPException(status_code=400, detail="Message cannot be empty")
     result = ai_engine.process_user_message(payload.message, session_id=payload.session_id)
     return result
+
+@app.post("/upload-pdf")
+@app.post("/api/upload-pdf")
+async def upload_pdf_to_vector_store(file: UploadFile = File(...)):
+    filename = file.filename or "uploaded.pdf"
+    if os.path.splitext(filename)[1].lower() != ".pdf":
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    try:
+        result = document_store.store_pdf(await file.read(), filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Could not index the PDF. Check that Ollama is running and '{document_store.EMBEDDING_MODEL}' is installed: {exc}"
+        ) from exc
+    return {"success": True, **result}
 
 @app.get("/api/chat/history")
 def get_history(session_id: str = "default", limit: int = 50):
@@ -191,10 +209,18 @@ async def upload_document(
         result = extractor_engine.extract_and_store_pdf(contents, filename, category=category)
         if not result.get("success"):
             raise HTTPException(status_code=400, detail=result.get("error", "Failed to process PDF"))
+        try:
+            vector_result = document_store.store_pdf(contents, filename)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"PDF text was extracted, but vector indexing failed. Check Ollama and the '{document_store.EMBEDDING_MODEL}' model: {exc}"
+            ) from exc
         return {
             "success": True,
             "filename": filename,
             "chunks_stored": result.get("chunks_stored", 0),
+            "vector_chunks_stored": vector_result["chunks_stored"],
             "message": result.get("display_message"),
             "speech_text": result.get("speech_text"),
             "document_id": start_analysis(result, filename, category, session_id)
@@ -242,6 +268,13 @@ async def chat_attachment(
         res = extractor_engine.extract_and_store_pdf(contents, filename)
         if not res.get("success"):
             raise HTTPException(status_code=400, detail=res.get("error"))
+        try:
+            document_store.store_pdf(contents, filename)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"PDF text was extracted, but vector indexing failed. Check Ollama and the '{document_store.EMBEDDING_MODEL}' model: {exc}"
+            ) from exc
         bot_reply = res["display_message"] + ANALYSING_NOTE
         speech_text = res["speech_text"] + " I am now analysing it and researching its topics in the background."
         sources = res.get("memories", [])

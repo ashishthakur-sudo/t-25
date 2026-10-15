@@ -51,14 +51,42 @@ def chunk_text(text: str, chunk_size: int = 800, overlap: int = 150) -> List[str
         if end < len(clean_text):
             split_floor = start + chunk_size // 2
             boundary = max(clean_text.rfind("\n", split_floor, end), clean_text.rfind(" ", split_floor, end))
-            if boundary > start:
+            if boundary <= start:
+                next_boundary = min(
+                    (position for position in (
+                        clean_text.find("\n", end),
+                        clean_text.find(" ", end)
+                    ) if position >= 0),
+                    default=-1
+                )
+                if next_boundary >= 0:
+                    end = next_boundary
+            else:
                 end = boundary
         chunk = clean_text[start:end].strip()
         if chunk:
             chunks.append(chunk)
         if end >= len(clean_text):
             break
-        start = max(start + 1, end - overlap)
+        next_start = max(start + 1, end - overlap)
+        if next_start < len(clean_text) and not clean_text[next_start].isspace():
+            previous_boundary = max(
+                clean_text.rfind("\n", start, next_start),
+                clean_text.rfind(" ", start, next_start)
+            )
+            if previous_boundary > start:
+                next_start = previous_boundary + 1
+            else:
+                next_boundary = min(
+                    (position for position in (
+                        clean_text.find("\n", next_start),
+                        clean_text.find(" ", next_start)
+                    ) if position >= 0),
+                    default=-1
+                )
+                if next_boundary >= 0:
+                    next_start = next_boundary + 1
+        start = max(start + 1, next_start)
 
     return chunks
 
@@ -284,25 +312,20 @@ def fetch_and_extract_url(url: str) -> Dict[str, Any]:
 
     # 5. Extract readable article/body text
     # Remove navigation, scripts, footer, header
-    for tag in soup(["script", "style", "nav", "footer", "header", "noscript", "svg", "aside"]):
+    for tag in soup(["script", "style", "nav", "footer", "header", "noscript", "svg", "aside", "form", "button", "iframe"]):
         tag.decompose()
         
-    # Get paragraphs
-    paragraphs = []
     main_elem = soup.find("article") or soup.find("main") or soup.find(id=re.compile(r'content|main|article', re.I)) or soup.body
-    if main_elem:
-        for p in main_elem.find_all(["p", "h2", "h3", "li", "tr", "blockquote", "dt", "dd"]):
-            separator = " | " if p.name == "tr" else " "
-            text_line = p.get_text(separator, strip=True)
-            if len(text_line) > 25:
-                paragraphs.append(text_line)
-                
-    full_body_text = "\n\n".join(paragraphs) if paragraphs else (description or soup.get_text(" ", strip=True)[:4000])
+    full_body_text = (
+        (main_elem.get_text("\n", strip=True) if main_elem else soup.get_text("\n", strip=True))
+        or description
+    )[:4000].strip()
 
     # 6. Chunk and Store into Memory
     category = "Products" if is_product else "Web Articles"
     chunks = chunk_text(full_body_text, chunk_size=800)
-    
+
+    memory_engine.delete_memories_by_source([f"url:{clean_url}"])
     stored_memories = []
     
     # Store primary overview card
@@ -337,15 +360,14 @@ def fetch_and_extract_url(url: str) -> Dict[str, Any]:
 
     # Store remaining long chunks
     for idx, ch in enumerate(chunks, 1):
-        if len(ch) > 40:
-            m = memory_engine.add_memory(
-                title=f"{title[:45]} (Part {idx})",
-                content=ch,
-                category=category,
-                tags=f"web, {clean_url}",
-                source=f"url:{clean_url}"
-            )
-            stored_memories.append(m)
+        m = memory_engine.add_memory(
+            title=f"{title[:45]} (Part {idx})",
+            content=ch,
+            category=category,
+            tags=f"web, {clean_url}",
+            source=f"url:{clean_url}"
+        )
+        stored_memories.append(m)
 
     # Format user-facing message & speech
     if is_product:
@@ -386,6 +408,7 @@ def fetch_and_extract_url(url: str) -> Dict[str, Any]:
         "brand": brand_str,
         "rating": rating_str,
         "image_url": image_url,
+        "page_text": full_body_text,
         "chunks_stored": len(stored_memories),
         "display_message": display_msg,
         "speech_text": speech_text,

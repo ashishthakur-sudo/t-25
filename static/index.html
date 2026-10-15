@@ -251,7 +251,7 @@
             <div class="settings-card">
               <h3>🤖 AI Engine & Provider</h3>
               <p style="font-size:0.85rem; color:var(--text-muted);">
-                Choose local memory, a locally running Ollama model, or a hosted AI provider. Ollama uses your retrieved knowledge as context.
+                Chat questions use Yahoo web search and local knowledge. The selected AI provider receives retrieved source text as context; Yahoo and hosted AI providers require internet access.
               </p>
 
               <div class="form-group">
@@ -271,11 +271,14 @@
                 </div>
                 <div class="form-group">
                   <label>Ollama Model:</label>
-                  <input type="text" id="ollamaModelInput" class="form-control" placeholder="llama3.1:8b">
+                  <input type="text" id="ollamaModelInput" class="form-control" placeholder="llama3.2">
                 </div>
               </div>
 
               <div id="geminiFields" style="display:none; display:flex; flex-direction:column; gap:12px;">
+                <p style="font-size:0.82rem; color:var(--text-muted);">
+                  With Gemini selected, your question and retrieved Yahoo source text are sent to Google Gemini. Answers and source links are saved for later recall.
+                </p>
                 <div class="form-group">
                   <label>Google Gemini API Key:</label>
                   <input type="password" id="geminiKeyInput" class="form-control" placeholder="AIzaSy...">
